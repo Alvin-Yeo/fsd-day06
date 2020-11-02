@@ -7,7 +7,11 @@ const mysql = require('mysql2/promise');
 const PORT = parseInt(process.argv[2]) || parseInt([process.env.PORT]) || 3000;
 
 // SQL
-const SQL_FIND_BY_NAME = `select * from apps where name like ? limit ?`;
+const SQL_FIND_BY_NAME = `select * from apps where name like ? limit ? offset ?`;
+const RECORDS_PER_PAGE = 5;
+let q, cached_records;
+let offset = 0;
+let current_page = 1;
 
 // create the database connection pool
 const pool = mysql.createPool({
@@ -56,9 +60,28 @@ app.get(['/', '/index.html'], (req, res) => {
     res.render('index');
 });
 
-app.get('/search', async (req, res) => {
-    const q = req.query['keyword'];
+app.get('/search', (req, res, next) => {
+    q = req.query['keyword'];
+    current_page = 1;
+    offset = 0;
+    next();
+});
 
+app.get('/search/previous', (req, res, next) => {
+    current_page--;
+    offset -= RECORDS_PER_PAGE;
+    if(current_page < 1) current_page = 1;
+    if(offset < 0) offset = 0;
+    next();
+});
+
+app.get('/search/next', (req, res, next) => {
+    current_page++;
+    offset += RECORDS_PER_PAGE;
+    next();
+});
+
+app.use('/search', async (req, res) => {
     let recs, _;
 
     // acquire a connection from the pool
@@ -66,7 +89,7 @@ app.get('/search', async (req, res) => {
 
     try {
         // perform the query
-        [ recs, _ ] = await conn.query(SQL_FIND_BY_NAME, [`%${q}%`, 10]);
+        [ recs, _ ] = await conn.query(SQL_FIND_BY_NAME, [`%${q}%`, RECORDS_PER_PAGE, offset]);
         // console.info('>> Records: ', recs);
     } catch(e) {
         console.error('Database query failed: ', e);
@@ -77,11 +100,26 @@ app.get('/search', async (req, res) => {
 
     res.status(200);
     res.type('text/html');
-    res.render('result', {
-        keyword: q,
-        recs,
-        hasContent: !!recs.length
-    });
+    
+    if(current_page > 1 && recs.length === 0) {
+        current_page--;
+        offset -= RECORDS_PER_PAGE;
+        res.render('result', {
+            keyword: q,
+            recs: cached_records,
+            hasContent: !!cached_records.length,
+            page: current_page,
+            ending: 'You have reached the end of search result!'
+        });
+    } else {
+        cached_records = [...recs];
+        res.render('result', {
+            keyword: q,
+            recs: recs,
+            hasContent: !!recs.length,
+            page: current_page
+        });
+    }
 });
 
 // start server
